@@ -341,7 +341,7 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
     ema_model = BCP_net(model="UNet", in_chns=1, class_num=num_classes, ema=True)
 
     db_val = ACDCDataSet(base_dir=args.root_path, split="val", logging=logging)
-    c_batch_size = 2 # TODO
+    c_batch_size = 16 # TODO
 
     trainset_lab_a = ACDCDataSet(base_dir=args.root_path, split="train_lab",
                                  transform=transforms.Compose([RandomGenerator(args.patch_size)]), logging=logging)
@@ -401,16 +401,14 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                 plab_b = get_ACDC_masks(pre_b, nms=1)
                 img_mask, loss_mask = generate_mask(img_a)
 
-
-
             net_input_l = unimg_a * img_mask + img_b * (1 - img_mask)
             net_input_unl = img_a * img_mask + unimg_b * (1 - img_mask)
 
             out_l, feat_l = model(net_input_l)
-            out_unl, feat_unl = model(net_input_unl)
+            out_unl, _ = model(net_input_unl)
 
             out_l_2, _ = model2(net_input_l)
-            out_unl_2, _ = model2(net_input_unl)
+            out_unl_2, feat_unl = model2(net_input_unl)
 
             l_dice, l_ce = mix_loss(out_l, plab_a, lab_b, loss_mask, u_weight=args.u_weight, unlab=True)
             unl_dice, unl_ce = mix_loss(out_unl, lab_a, plab_b, loss_mask, u_weight=args.u_weight)
@@ -418,8 +416,8 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
             l_dice_2, l_ce_2 = mix_loss(out_l_2, plab_a, lab_b, loss_mask, u_weight=args.u_weight, unlab=True)
             unl_dice_2, unl_ce_2 = mix_loss(out_unl_2, lab_a, plab_b, loss_mask, u_weight=args.u_weight)
 
-            loss_contrast1 = compute_contrastive_loss(feat_l, model.projection_head)
-            loss_contrast2 = compute_contrastive_loss(feat_unl, model.projection_head)
+            loss_contrast_l = compute_contrastive_loss(feat_l, model.projection_head)
+            loss_contrast_ul = compute_contrastive_loss(feat_unl, model2.projection_head)
 
             loss_ce = unl_ce + l_ce
             loss_dice = unl_dice + l_dice
@@ -445,10 +443,10 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
             net2_kl_loss_unlab = mix_max_kl_loss(out_unl_2, lab_a, plab_b.long(), loss_mask, diff_mask=diff_mask2)
 
             loss = (loss_dice + loss_ce) / 2 + 0.5 * (net1_mse_loss_lab + net1_mse_loss_unlab) + 0.05 * (
-                        net1_kl_loss_lab + net1_kl_loss_unlab)
+                        net1_kl_loss_lab + net1_kl_loss_unlab) + 0.1 * loss_contrast_l
 
             loss_2 = (loss_dice_2 + loss_ce_2) / 2 + 0.5 * (net2_mse_loss_lab + net2_mse_loss_unlab) + 0.05 * (
-                        net2_kl_loss_lab + net2_kl_loss_unlab)
+                        net2_kl_loss_lab + net2_kl_loss_unlab) + 0.1 * loss_contrast_ul
 
             optimizer.zero_grad()
             loss.backward()
@@ -464,9 +462,11 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
 
             logging.info('iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
                          'net1_mse_loss_lab: %.4f, net1_mse_loss_unlab: %.4f, '
-                         'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f' % (
+                         'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f' 
+                         'loss_contrast_l: %.4f, loss_contrast_ul: %.4f' 
+                         % (
                          iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
-                         net1_kl_loss_lab.item(), net1_kl_loss_unlab.item()))
+                         net1_kl_loss_lab.item(), net1_kl_loss_unlab.item(), loss_contrast_l.item(), loss_contrast_ul.item()))
 
             if iter_num % 200 == 0:
                 model.eval()
