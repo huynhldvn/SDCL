@@ -551,17 +551,7 @@ if __name__ == "__main__":
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
-    if args.deterministic:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
-        # torch.backends.cudnn.benchmark = False
-        # torch.backends.cudnn.deterministic = True
-        cudnn.benchmark = False
-        # cudnn.deterministic = True
-        torch.use_deterministic_algorithms(True)
+
     self_train2(args, self_snapshot_path, self_snapshot_path)
 
 
