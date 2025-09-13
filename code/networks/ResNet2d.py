@@ -267,7 +267,7 @@ class ResUNet_2d(nn.Module):
     def forward(self, x):
         feature = self.encoder(x)
         output, features = self.decoder(feature)
-        return output
+        return output, features
 
 
 class Sep_UNet_2d(nn.Module):
