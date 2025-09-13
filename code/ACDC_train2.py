@@ -302,6 +302,14 @@ from test_ACDC import TESTACDC
 
 import torch.nn.functional as F
 
+import os
+import wandb
+
+# Lấy từ Kaggle Secrets
+WANDB_KEY = os.environ["WANDB_API_KEY"]
+wandb.login(key=WANDB_KEY)
+
+wandb.init(project="j_acdc", name="unet_with_contrastive")
 
 def compute_contrastive_loss(features, projection_head, temperature=0.1):
     """
@@ -386,7 +394,7 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
     best_performance = 0.0
     best_performance2 = 0.0
     best_performance_mean = 0.0
-    max_epoch = 401
+    max_epoch = 1000
     iterator = tqdm(range(1, max_epoch), ncols=70)
     for epoch in iterator:
         for step, ((img_a, lab_a), (img_b, lab_b), (unimg_a, unlab_a), (unimg_b, unlab_b)) in enumerate(
@@ -468,6 +476,25 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                          iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
                          net1_kl_loss_lab.item(), net1_kl_loss_unlab.item(), loss_contrast_l.item(), loss_contrast_ul.item()))
 
+            wandb.log({
+                "loss": loss.item(),
+                "loss_2": loss_2.item(),
+                "loss_dice": loss_dice.item(),
+                "loss_ce": loss_ce.item(),
+                "loss_dice_2": loss_dice_2.item(),
+                "loss_ce_2": loss_ce_2.item(),
+                "net1_mse_loss_lab": net1_mse_loss_lab.item(),
+                "net1_mse_loss_unlab": net1_mse_loss_unlab.item(),
+                "net1_kl_loss_lab": net1_kl_loss_lab.item(),
+                "net1_kl_loss_unlab": net1_kl_loss_unlab.item(),
+                "net2_mse_loss_lab": net2_mse_loss_lab.item(),
+                "net2_mse_loss_unlab": net2_mse_loss_unlab.item(),
+                "net2_kl_loss_lab": net2_kl_loss_lab.item(),
+                "net2_kl_loss_unlab": net2_kl_loss_unlab.item(),
+                "loss_contrast_l": loss_contrast_l.item(),
+                "loss_contrast_ul": loss_contrast_ul.item(),
+            })
+
             if iter_num % 100 == 0:
                 model.eval()
                 model2.eval()
@@ -531,6 +558,14 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                     'resnet iteration %d : mean_dice : %f, val_maxdice : %f' % (iter_num, performance2, best_performance2))
                 logging.info('mean iteration %d : mean_dice : %f, val_maxdice : %f' % (
                     iter_num, performance_mean, best_performance_mean))
+                wandb.log({
+                    "val_dice": performance,
+                    "val_dice_res": performance2,
+                    "val_dice_mean": performance_mean,
+                    "best_val_dice": best_performance,
+                    "best_val_dice_res": best_performance2,
+                    "best_val_dice_mean": best_performance_mean,
+                })
 
                 model.train()
                 model2.train()
