@@ -462,13 +462,13 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
 
             logging.info('iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
                          'net1_mse_loss_lab: %.4f, net1_mse_loss_unlab: %.4f, '
-                         'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f' 
+                         'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f ' 
                          'loss_contrast_l: %.4f, loss_contrast_ul: %.4f' 
                          % (
                          iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
                          net1_kl_loss_lab.item(), net1_kl_loss_unlab.item(), loss_contrast_l.item(), loss_contrast_ul.item()))
 
-            if iter_num % 200 == 0:
+            if iter_num % 100 == 0:
                 model.eval()
                 model2.eval()
                 metric_list = 0.0
