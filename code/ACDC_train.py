@@ -300,6 +300,15 @@ import csv
 
 from test_ACDC import TESTACDC
 
+import os
+import wandb
+
+# Lấy từ Kaggle Secrets
+WANDB_KEY = os.environ["WANDB_API_KEY"]
+wandb.login(key=WANDB_KEY)
+
+wandb.init(project="j_acdc", name="base")
+
 def pre_train(args, snapshot_path):
     num_classes = args.num_classes
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -546,10 +555,10 @@ def self_train(args, pre_snapshot_path, snapshot_path):
             update_model_ema(model, ema_model, 0.99)
 
 
-            logging.info('iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
+            logging.info('epoch %d-iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
                          'net1_mse_loss_lab: %.4f, net1_mse_loss_unlab: %.4f, '
                          'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f' % (
-                         iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
+                         epoch, iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
                          net1_kl_loss_lab.item(), net1_kl_loss_unlab.item()))
 
             if iter_num % 200 == 0:
@@ -615,6 +624,16 @@ def self_train(args, pre_snapshot_path, snapshot_path):
                     'resnet iteration %d : mean_dice : %f, val_maxdice : %f' % (iter_num, performance2, best_performance2))
                 logging.info('mean iteration %d : mean_dice : %f, val_maxdice : %f' % (
                     iter_num, performance_mean, best_performance_mean))
+
+                wandb.log({
+                    "Unet Mean Dice": performance,
+                    "Max Unet Mean Dice": best_performance,
+                    "ResNet Mean Dice": performance2,
+                    "Max ResNet Mean Dice": best_performance2,
+                    
+                    "Mean": performance_mean,
+                    "Max Mean": best_performance_mean
+                })
 
                 model.train()
                 model2.train()
