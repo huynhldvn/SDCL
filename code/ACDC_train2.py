@@ -471,12 +471,12 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
             update_model_ema(model, ema_model, 0.99)
 
 
-            logging.info('iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
+            logging.info('epoch %d, iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
                          'net1_mse_loss_lab: %.4f, net1_mse_loss_unlab: %.4f, '
                          'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f ' 
                          'loss_contrast_1: %.4f, loss_contrast_2: %.4f' 
                          % (
-                         iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
+                         epoch, iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
                          net1_kl_loss_lab.item(), net1_kl_loss_unlab.item(), 
                          loss_contrast_l.item() + loss_contrast_ul.item(),
                          loss_contrast_l2.item() + loss_contrast_ul2.item(),
