@@ -300,8 +300,6 @@ import csv
 
 from test_ACDC import TESTACDC
 
-import torch.nn.functional as F
-
 import os
 import wandb
 
@@ -309,53 +307,125 @@ import wandb
 WANDB_KEY = os.environ["WANDB_API_KEY"]
 wandb.login(key=WANDB_KEY)
 
-wandb.init(project="j", name="acdc_2_sdcl_contrastive")
+wandb.init(project="j", name="acdc_0_reproduce")
 
-import torch
-import torch.nn.functional as F
+def pre_train(args, snapshot_path):
+    num_classes = args.num_classes
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
-def contrastive_loss_from_pairs(feat_l, feat_u, projection_head, temperature=0.1):
-    # Pool if feature maps
-    if feat_l.dim() == 4:
-        feat_l = torch.mean(feat_l, dim=[2, 3])
-    if feat_u.dim() == 4:
-        feat_u = torch.mean(feat_u, dim=[2, 3])
 
-    B = feat_l.size(0)
-    if B == 0:
-        return torch.tensor(0.0, device=feat_l.device)
-
-    # projection
-    z1 = projection_head(feat_l)  # (B, D)
-    z2 = projection_head(feat_u)  # (B, D)
-
-    # normalize
-    z1 = F.normalize(z1, dim=1)
-    z2 = F.normalize(z2, dim=1)
-
-    # concat
-    embeddings = torch.cat([z1, z2], dim=0)  # (2B, D)
-    sim_matrix = torch.matmul(embeddings, embeddings.t()) / temperature  # (2B, 2B)
-
-    # mask self-similarity
-    mask = torch.eye(2*B, dtype=torch.bool, device=embeddings.device)
-    neg_inf = torch.finfo(sim_matrix.dtype).min
-    sim_matrix = sim_matrix.masked_fill(mask, neg_inf)
-
-    # positives: i <-> i+B
-    positives = torch.cat([
-        torch.arange(B, 2*B, device=embeddings.device),
-        torch.arange(0, B, device=embeddings.device)
-    ])
-
-    # log-prob and loss
-    log_prob = F.log_softmax(sim_matrix, dim=1)
-    loss = -log_prob[torch.arange(2*B, device=embeddings.device), positives].mean()
-    return loss
+    model = BCP_net(model="UNet", in_chns=1, class_num=num_classes)
+    model2 = BCP_net(model="ResUNet", in_chns=1, class_num=num_classes)
 
 
 
-def self_train2(args, pre_snapshot_path, snapshot_path):
+    db_val = ACDCDataSet(base_dir=args.root_path, split="val", logging=logging)
+    c_batch_size = 16
+
+    trainset_lab_a = ACDCDataSet(base_dir=args.root_path, split="train_lab",
+                                 transform=transforms.Compose([RandomGenerator(args.patch_size)]), logging=logging)
+    lab_loader_a = DataLoader(trainset_lab_a, batch_size=c_batch_size, shuffle=False, num_workers=0, drop_last=True)
+
+    trainset_lab_b = ACDCDataSet(base_dir=args.root_path, split="train_lab",
+                                 transform=transforms.Compose([RandomGenerator(args.patch_size)]), reverse=True,
+                                 logging=logging)
+    lab_loader_b = DataLoader(trainset_lab_b, batch_size=c_batch_size, shuffle=False, num_workers=0, drop_last=True)
+
+
+    valloader = DataLoader(db_val, batch_size=1, shuffle=False, num_workers=0)
+
+
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer2 = optim.Adam(model2.parameters(), lr=1e-3)
+    logging.info("optim.Adam pre_training")
+
+    logging.info("Start pre_training")
+    logging.info("{} iterations per epoch".format(len(trainset_lab_a)))
+
+    model.train()
+    model2.train()
+
+    iter_num = 0
+    best_performance = 0.0
+    best_performance2 = 0.0
+    max_epoch = 101
+    iterator = tqdm(range(1, max_epoch), ncols=70)
+    for epoch in iterator:
+        logging.info("\n")
+        for step, ((img_a, lab_a), (img_b, lab_b)) in enumerate(zip(lab_loader_a, lab_loader_b)):
+            img_a, img_b, lab_a, lab_b = img_a.cuda(), img_b.cuda(), lab_a.cuda(), lab_b.cuda()
+
+            img_mask, loss_mask = generate_mask(img_a)
+
+
+            # -- original
+            net_input = img_a * img_mask + img_b * (1 - img_mask)
+            out_mixl = model(net_input)
+            out_mixl_2 = model2(net_input)
+
+            loss_dice, loss_ce = mix_loss(out_mixl, lab_a, lab_b, loss_mask, u_weight=1.0, unlab=True)
+            loss_dice_2, loss_ce_2 = mix_loss(out_mixl_2, lab_a, lab_b, loss_mask, u_weight=1.0, unlab=True)
+
+            loss = (loss_dice + loss_ce) / 2
+            loss_2 = (loss_dice_2 + loss_ce_2) / 2
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            optimizer2.zero_grad()
+            loss_2.backward()
+            optimizer2.step()
+
+            iter_num += 1
+
+            logging.info('iteration %d: loss: %f, mix_dice: %f, mix_ce: %f' % (iter_num, loss, loss_dice, loss_ce))
+
+
+        if epoch >= 50 and epoch % 5 == 0:
+            model.eval()
+            model2.eval()
+            metric_list = 0.0
+            metric_list_2 = 0.0
+            for _, (img_val, lab_val) in tqdm(enumerate(valloader), ncols=70):
+                metric_i = val_2d.test_single_volume(img_val, lab_val, model, classes=num_classes)
+                metric_i_2 = val_2d.test_single_volume(img_val, lab_val, model2, classes=num_classes)
+
+                metric_list += np.array(metric_i)
+                metric_list_2 += np.array(metric_i_2)
+
+            metric_list = metric_list / len(db_val)
+            metric_list_2 = metric_list_2 / len(db_val)
+
+            performance = np.mean(metric_list, axis=0)[0]
+            performance2 = np.mean(metric_list_2, axis=0)[0]
+
+            if performance > best_performance:
+                best_performance = performance
+                save_mode_path = os.path.join(snapshot_path,
+                                              'iter_{}_dice_{}.pth'.format(iter_num, round(best_performance, 4)))
+                save_best_path = os.path.join(snapshot_path, 'best_model.pth')
+                save_net_opt(model, optimizer, save_mode_path)
+                save_net_opt(model, optimizer, save_best_path)
+
+            if performance2 > best_performance2:
+                best_performance2 = performance2
+                save_mode_path = os.path.join(snapshot_path,
+                                              'iter_{}_dice_{}_res.pth'.format(iter_num, round(best_performance2, 4)))
+                save_best_path = os.path.join(snapshot_path, 'best_model_res.pth')
+                save_net_opt(model2, optimizer2, save_mode_path)
+                save_net_opt(model2, optimizer2, save_best_path)
+
+            logging.info('iteration %d : mean_dice : %f, val_maxdice : %f' % (iter_num, performance, best_performance))
+            logging.info(
+                'resnet iteration %d : mean_dice : %f, val_maxdice : %f' % (iter_num, performance2, best_performance2))
+            model.train()
+            model2.train()
+
+
+
+def self_train(args, pre_snapshot_path, snapshot_path):
     num_classes = args.num_classes
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
@@ -367,7 +437,7 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
     ema_model = BCP_net(model="UNet", in_chns=1, class_num=num_classes, ema=True)
 
     db_val = ACDCDataSet(base_dir=args.root_path, split="val", logging=logging)
-    c_batch_size = 16 # TODO
+    c_batch_size = 16
 
     trainset_lab_a = ACDCDataSet(base_dir=args.root_path, split="train_lab",
                                  transform=transforms.Compose([RandomGenerator(args.patch_size)]), logging=logging)
@@ -421,29 +491,28 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                 [img_a, lab_a, img_b, lab_b, unimg_a, unlab_a, unimg_b, unlab_b])
 
             with torch.no_grad():
-                pre_a, _ = ema_model(unimg_a)
-                pre_b, _ = ema_model(unimg_b)
+                pre_a = ema_model(unimg_a)
+                pre_b = ema_model(unimg_b)
                 plab_a = get_ACDC_masks(pre_a, nms=1)
                 plab_b = get_ACDC_masks(pre_b, nms=1)
                 img_mask, loss_mask = generate_mask(img_a)
 
+
+
             net_input_l = unimg_a * img_mask + img_b * (1 - img_mask)
             net_input_unl = img_a * img_mask + unimg_b * (1 - img_mask)
 
-            out_l, feat_l = model(net_input_l)
-            out_unl, feat_u = model(net_input_unl)
+            out_l = model(net_input_l)
+            out_unl = model(net_input_unl)
 
-            out_l_2, feat_l2 = model2(net_input_l)
-            out_unl_2, feat_u2 = model2(net_input_unl)
+            out_l_2 = model2(net_input_l)
+            out_unl_2 = model2(net_input_unl)
 
             l_dice, l_ce = mix_loss(out_l, plab_a, lab_b, loss_mask, u_weight=args.u_weight, unlab=True)
             unl_dice, unl_ce = mix_loss(out_unl, lab_a, plab_b, loss_mask, u_weight=args.u_weight)
 
             l_dice_2, l_ce_2 = mix_loss(out_l_2, plab_a, lab_b, loss_mask, u_weight=args.u_weight, unlab=True)
             unl_dice_2, unl_ce_2 = mix_loss(out_unl_2, lab_a, plab_b, loss_mask, u_weight=args.u_weight)
-
-            loss_contrast_1 = contrastive_loss_from_pairs(feat_l, feat_u, model.projection_head)
-            loss_contrast_2 = contrastive_loss_from_pairs(feat_l2, feat_u2, model2.projection_head)
 
             loss_ce = unl_ce + l_ce
             loss_dice = unl_dice + l_dice
@@ -469,10 +538,10 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
             net2_kl_loss_unlab = mix_max_kl_loss(out_unl_2, lab_a, plab_b.long(), loss_mask, diff_mask=diff_mask2)
 
             loss = (loss_dice + loss_ce) / 2 + 0.5 * (net1_mse_loss_lab + net1_mse_loss_unlab) + 0.05 * (
-                        net1_kl_loss_lab + net1_kl_loss_unlab) + 0.05 * loss_contrast_1
+                        net1_kl_loss_lab + net1_kl_loss_unlab)
 
             loss_2 = (loss_dice_2 + loss_ce_2) / 2 + 0.5 * (net2_mse_loss_lab + net2_mse_loss_unlab) + 0.05 * (
-                        net2_kl_loss_lab + net2_kl_loss_unlab) + 0.05 * loss_contrast_2
+                        net2_kl_loss_lab + net2_kl_loss_unlab)
 
             optimizer.zero_grad()
             loss.backward()
@@ -486,34 +555,20 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
             update_model_ema(model, ema_model, 0.99)
 
 
-            logging.info('epoch %d, iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
+            logging.info('epoch %d-iteration %d: loss: %f, mix_dice: %f, mix_ce: %f '
                          'net1_mse_loss_lab: %.4f, net1_mse_loss_unlab: %.4f, '
-                         'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f ' 
-                         'loss_contrast_1: %.4f, loss_contrast_2: %.4f' 
-                         % (
+                         'net1_kl_loss_lab: %.4f, net1_kl_loss_unlab: %.4f' % (
                          epoch, iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
-                         net1_kl_loss_lab.item(), net1_kl_loss_unlab.item(), 
-                         loss_contrast_1.item(),
-                         loss_contrast_2.item(),
-                         ))
+                         net1_kl_loss_lab.item(), net1_kl_loss_unlab.item()))
 
             wandb.log({
-                "loss": loss.item(),
-                "loss_2": loss_2.item(),
-                "loss_dice": loss_dice.item(),
-                "loss_ce": loss_ce.item(),
-                "loss_dice_2": loss_dice_2.item(),
-                "loss_ce_2": loss_ce_2.item(),
-                "net1_mse_loss_lab": net1_mse_loss_lab.item(),
-                "net1_mse_loss_unlab": net1_mse_loss_unlab.item(),
-                "net1_kl_loss_lab": net1_kl_loss_lab.item(),
-                "net1_kl_loss_unlab": net1_kl_loss_unlab.item(),
-                "net2_mse_loss_lab": net2_mse_loss_lab.item(),
-                "net2_mse_loss_unlab": net2_mse_loss_unlab.item(),
-                "net2_kl_loss_lab": net2_kl_loss_lab.item(),
-                "net2_kl_loss_unlab": net2_kl_loss_unlab.item(),
-                "loss_contrast_1": loss_contrast_1.item(),
-                "loss_contrast_2": loss_contrast_2.item(),
+                "Self Train Loss": loss,
+                "Self Train Mix Dice": loss_dice,
+                "Self Train Mix CE": loss_ce,
+                "Self Train MSE Lab": net1_mse_loss_lab.item(),
+                "Self Train MSE Unlab": net1_mse_loss_unlab.item(),
+                "Self Train KL Lab": net1_kl_loss_lab.item(),
+                "Self Train KL Unlab": net1_kl_loss_unlab.item()
             })
 
             if iter_num % 100 == 0:
@@ -579,13 +634,14 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                     'resnet iteration %d : mean_dice : %f, val_maxdice : %f' % (iter_num, performance2, best_performance2))
                 logging.info('mean iteration %d : mean_dice : %f, val_maxdice : %f' % (
                     iter_num, performance_mean, best_performance_mean))
+
                 wandb.log({
-                    "val_dice": performance,
-                    "val_dice_res": performance2,
-                    "val_dice_mean": performance_mean,
-                    "best_val_dice": best_performance,
-                    "best_val_dice_res": best_performance2,
-                    "best_val_dice_mean": best_performance_mean,
+                    "performance": performance,
+                    "best_performance": best_performance,
+                    "performance2": performance2,
+                    "best_performance2": best_performance2,
+                    "performance_mean": performance_mean,
+                    "best_performance_mean": best_performance_mean,
                 })
 
                 model.train()
@@ -594,21 +650,39 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
 
 
 if __name__ == "__main__":
+    # if args.deterministic:
+    #     cudnn.benchmark = False
+    #     cudnn.deterministic = True
+    #     random.seed(args.seed)
+    #     np.random.seed(args.seed)
+    #     torch.manual_seed(args.seed)
+    #     torch.cuda.manual_seed(args.seed)
+
     # -- path to save models
     pre_snapshot_path = "./model/SDCL/ACDC_{}_{}_labeled/pre_train".format(args.exp, 7)
     self_snapshot_path = "./model/SDCL/ACDC_{}_{}_labeled/self_train".format(args.exp, 7)
     for snapshot_path in [pre_snapshot_path, self_snapshot_path]:
         if not os.path.exists(snapshot_path):
             os.makedirs(snapshot_path)
-    shutil.copy('../code/ACDC_train2.py', self_snapshot_path)
+    shutil.copy('../code/ACDC_train0.py', self_snapshot_path)
 
     # Self_train
     logging.basicConfig(filename=self_snapshot_path + "/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
-
-    self_train2(args, self_snapshot_path, self_snapshot_path)
+    if args.deterministic:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        # torch.backends.cudnn.benchmark = False
+        # torch.backends.cudnn.deterministic = True
+        cudnn.benchmark = False
+        # cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True)
+    self_train(args, pre_snapshot_path, self_snapshot_path)
 
 
 

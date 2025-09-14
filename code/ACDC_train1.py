@@ -309,7 +309,7 @@ import wandb
 WANDB_KEY = os.environ["WANDB_API_KEY"]
 wandb.login(key=WANDB_KEY)
 
-wandb.init(project="j", name="acdc_2_sdcl_contrastive")
+wandb.init(project="j", name="acdc_1_closs_from_pretrain_compare_with_0")
 
 import torch
 import torch.nn.functional as F
@@ -580,12 +580,12 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                 logging.info('mean iteration %d : mean_dice : %f, val_maxdice : %f' % (
                     iter_num, performance_mean, best_performance_mean))
                 wandb.log({
-                    "val_dice": performance,
-                    "val_dice_res": performance2,
-                    "val_dice_mean": performance_mean,
-                    "best_val_dice": best_performance,
-                    "best_val_dice_res": best_performance2,
-                    "best_val_dice_mean": best_performance_mean,
+                    "performance": performance,
+                    "best_performance": best_performance,
+                    "performance2": performance2,
+                    "best_performance2": best_performance2,
+                    "performance_mean": performance_mean,
+                    "best_performance_mean": best_performance_mean,
                 })
 
                 model.train()
@@ -600,7 +600,7 @@ if __name__ == "__main__":
     for snapshot_path in [pre_snapshot_path, self_snapshot_path]:
         if not os.path.exists(snapshot_path):
             os.makedirs(snapshot_path)
-    shutil.copy('../code/ACDC_train2.py', self_snapshot_path)
+    shutil.copy('../code/ACDC_train1.py', self_snapshot_path)
 
     # Self_train
     logging.basicConfig(filename=self_snapshot_path + "/log.txt", level=logging.INFO,
@@ -608,7 +608,7 @@ if __name__ == "__main__":
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
 
-    self_train2(args, self_snapshot_path, self_snapshot_path)
+    self_train2(args, pre_snapshot_path, self_snapshot_path)
 
 
 
