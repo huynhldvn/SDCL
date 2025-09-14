@@ -309,32 +309,50 @@ import wandb
 WANDB_KEY = os.environ["WANDB_API_KEY"]
 wandb.login(key=WANDB_KEY)
 
-wandb.init(project="j_acdc", name="unet_with_contrastive")
+wandb.init(project="j", name="acdc_sdcl_contrastive")
 
-def compute_contrastive_loss(features, projection_head, temperature=0.1):
-    """
-    features: tensor [B, C, H, W] từ decoder (x_last)
-    projection_head: MLP biến features -> embedding
-    """
-    B, C, H, W = features.shape
-    features = features.view(B, C, -1).permute(0, 2, 1).contiguous()  # [B, HW, C]
+import torch
+import torch.nn.functional as F
 
-    # chọn ngẫu nhiên một số vị trí để giảm chi phí
-    idx = torch.randint(0, H*W, (B, 100))  # lấy 100 điểm/ảnh
-    sampled = []
-    for i in range(B):
-        sampled.append(features[i, idx[i]])  # [100, C]
-    sampled = torch.cat(sampled, dim=0)  # [B*100, C]
+def contrastive_loss_from_pairs(feat_l, feat_u, projection_head, temperature=0.1):
+    # Pool if feature maps
+    if feat_l.dim() == 4:
+        feat_l = torch.mean(feat_l, dim=[2, 3])
+    if feat_u.dim() == 4:
+        feat_u = torch.mean(feat_u, dim=[2, 3])
 
-    # đưa qua projection head
-    embeddings = projection_head(sampled)  # [N, feat_dim]
-    embeddings = F.normalize(embeddings, dim=1)
+    B = feat_l.size(0)
+    if B == 0:
+        return torch.tensor(0.0, device=feat_l.device)
 
-    # contrastive loss kiểu InfoNCE
-    sim_matrix = torch.matmul(embeddings, embeddings.t()) / temperature
-    labels = torch.arange(embeddings.size(0)).cuda()
-    loss = F.cross_entropy(sim_matrix, labels)
+    # projection
+    z1 = projection_head(feat_l)  # (B, D)
+    z2 = projection_head(feat_u)  # (B, D)
+
+    # normalize
+    z1 = F.normalize(z1, dim=1)
+    z2 = F.normalize(z2, dim=1)
+
+    # concat
+    embeddings = torch.cat([z1, z2], dim=0)  # (2B, D)
+    sim_matrix = torch.matmul(embeddings, embeddings.t()) / temperature  # (2B, 2B)
+
+    # mask self-similarity
+    mask = torch.eye(2*B, dtype=torch.bool, device=embeddings.device)
+    neg_inf = torch.finfo(sim_matrix.dtype).min
+    sim_matrix = sim_matrix.masked_fill(mask, neg_inf)
+
+    # positives: i <-> i+B
+    positives = torch.cat([
+        torch.arange(B, 2*B, device=embeddings.device),
+        torch.arange(0, B, device=embeddings.device)
+    ])
+
+    # log-prob and loss
+    log_prob = F.log_softmax(sim_matrix, dim=1)
+    loss = -log_prob[torch.arange(2*B, device=embeddings.device), positives].mean()
     return loss
+
 
 
 def self_train2(args, pre_snapshot_path, snapshot_path):
@@ -394,7 +412,7 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
     best_performance = 0.0
     best_performance2 = 0.0
     best_performance_mean = 0.0
-    max_epoch = 50
+    max_epoch = 10
     iterator = tqdm(range(1, max_epoch), ncols=70)
     for epoch in iterator:
         for step, ((img_a, lab_a), (img_b, lab_b), (unimg_a, unlab_a), (unimg_b, unlab_b)) in enumerate(
@@ -424,11 +442,8 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
             l_dice_2, l_ce_2 = mix_loss(out_l_2, plab_a, lab_b, loss_mask, u_weight=args.u_weight, unlab=True)
             unl_dice_2, unl_ce_2 = mix_loss(out_unl_2, lab_a, plab_b, loss_mask, u_weight=args.u_weight)
 
-            loss_contrast_l = compute_contrastive_loss(feat_l, model.projection_head)
-            loss_contrast_ul = compute_contrastive_loss(feat_u, model.projection_head)
-
-            loss_contrast_l2 = compute_contrastive_loss(feat_l2, model2.projection_head)
-            loss_contrast_ul2 = compute_contrastive_loss(feat_u2, model2.projection_head)
+            loss_contrast_1 = contrastive_loss_from_pairs(feat_l, feat_u, model.projection_head)
+            loss_contrast_2 = contrastive_loss_from_pairs(feat_l2, feat_u2, model2.projection_head)
 
             loss_ce = unl_ce + l_ce
             loss_dice = unl_dice + l_dice
@@ -454,10 +469,10 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
             net2_kl_loss_unlab = mix_max_kl_loss(out_unl_2, lab_a, plab_b.long(), loss_mask, diff_mask=diff_mask2)
 
             loss = (loss_dice + loss_ce) / 2 + 0.5 * (net1_mse_loss_lab + net1_mse_loss_unlab) + 0.05 * (
-                        net1_kl_loss_lab + net1_kl_loss_unlab) + 0.05 * (loss_contrast_l + loss_contrast_ul)
+                        net1_kl_loss_lab + net1_kl_loss_unlab) + 0.1 * loss_contrast_1
 
             loss_2 = (loss_dice_2 + loss_ce_2) / 2 + 0.5 * (net2_mse_loss_lab + net2_mse_loss_unlab) + 0.05 * (
-                        net2_kl_loss_lab + net2_kl_loss_unlab) + 0.05 * (loss_contrast_l2 + loss_contrast_ul2)
+                        net2_kl_loss_lab + net2_kl_loss_unlab) + 0.1 * loss_contrast_2
 
             optimizer.zero_grad()
             loss.backward()
@@ -478,8 +493,8 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                          % (
                          epoch, iter_num, loss, loss_dice, loss_ce, net1_mse_loss_lab.item(), net1_mse_loss_unlab.item(),
                          net1_kl_loss_lab.item(), net1_kl_loss_unlab.item(), 
-                         loss_contrast_l.item() + loss_contrast_ul.item(),
-                         loss_contrast_l2.item() + loss_contrast_ul2.item(),
+                         loss_contrast_1.item(),
+                         loss_contrast_2.item(),
                          ))
 
             wandb.log({
@@ -497,8 +512,8 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                 "net2_mse_loss_unlab": net2_mse_loss_unlab.item(),
                 "net2_kl_loss_lab": net2_kl_loss_lab.item(),
                 "net2_kl_loss_unlab": net2_kl_loss_unlab.item(),
-                "loss_contrast_1": loss_contrast_l.item(),
-                "loss_contrast_2": loss_contrast_ul.item(),
+                "loss_contrast_1": loss_contrast_1.item(),
+                "loss_contrast_2": loss_contrast_2.item(),
             })
 
             if iter_num % 10 == 0:
