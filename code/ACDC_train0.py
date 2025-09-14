@@ -117,8 +117,6 @@ def get_ACDC_2DLargestCC(segmentation):
 
 
 def get_ACDC_masks(output, nms=0):
-    if len(output) > 1:
-        output = output[0]
     probs = F.softmax(output, dim=1)
     _, probs = torch.max(probs, dim=1)
     if nms == 1:
@@ -493,8 +491,8 @@ def self_train(args, pre_snapshot_path, snapshot_path):
                 [img_a, lab_a, img_b, lab_b, unimg_a, unlab_a, unimg_b, unlab_b])
 
             with torch.no_grad():
-                pre_a = ema_model(unimg_a)
-                pre_b = ema_model(unimg_b)
+                pre_a, _ = ema_model(unimg_a)
+                pre_b, _ = ema_model(unimg_b)
                 plab_a = get_ACDC_masks(pre_a, nms=1)
                 plab_b = get_ACDC_masks(pre_b, nms=1)
                 img_mask, loss_mask = generate_mask(img_a)
@@ -504,11 +502,11 @@ def self_train(args, pre_snapshot_path, snapshot_path):
             net_input_l = unimg_a * img_mask + img_b * (1 - img_mask)
             net_input_unl = img_a * img_mask + unimg_b * (1 - img_mask)
 
-            out_l = model(net_input_l)
-            out_unl = model(net_input_unl)
+            out_l, _ = model(net_input_l)
+            out_unl, _ = model(net_input_unl)
 
-            out_l_2 = model2(net_input_l)
-            out_unl_2 = model2(net_input_unl)
+            out_l_2, _ = model2(net_input_l)
+            out_unl_2, _ = model2(net_input_unl)
 
             l_dice, l_ce = mix_loss(out_l, plab_a, lab_b, loss_mask, u_weight=args.u_weight, unlab=True)
             unl_dice, unl_ce = mix_loss(out_unl, lab_a, plab_b, loss_mask, u_weight=args.u_weight)
