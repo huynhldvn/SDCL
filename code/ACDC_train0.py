@@ -117,6 +117,8 @@ def get_ACDC_2DLargestCC(segmentation):
 
 
 def get_ACDC_masks(output, nms=0):
+    if len(output) > 1:
+        output = output[0]
     probs = F.softmax(output, dim=1)
     _, probs = torch.max(probs, dim=1)
     if nms == 1:
