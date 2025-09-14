@@ -394,7 +394,7 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
     best_performance = 0.0
     best_performance2 = 0.0
     best_performance_mean = 0.0
-    max_epoch = 1000
+    max_epoch = 50
     iterator = tqdm(range(1, max_epoch), ncols=70)
     for epoch in iterator:
         for step, ((img_a, lab_a), (img_b, lab_b), (unimg_a, unlab_a), (unimg_b, unlab_b)) in enumerate(
@@ -501,7 +501,7 @@ def self_train2(args, pre_snapshot_path, snapshot_path):
                 "loss_contrast_2": loss_contrast_ul.item(),
             })
 
-            if iter_num % 100 == 0:
+            if iter_num % 10 == 0:
                 model.eval()
                 model2.eval()
                 metric_list = 0.0
